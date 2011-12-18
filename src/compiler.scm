@@ -1,4 +1,5 @@
 (load "tests-driver.scm")
+;(load "tests-1.9-req.scm")
 (load "tests-1.8-req.scm")
 (load "tests-1.7-req.scm")
 (load "tests-1.6-opt.scm")
@@ -20,14 +21,30 @@
 (define charshift      8)
 (define charmask    #x3F)
 (define chartag     #x0F)
+(define objshift       3)
+(define objmask     #x07)
+(define pairtag     #x01)
+(define pairsize       8)
+(define paircar        0)
+(define paircdr        4)
 (define wordsize       4) ; bytes
+(define bytes          4)
+
+(define registers
+  '((eax scratch)
+    (ebx preserve)
+    (ecx scratch)
+    (edx scratch)
+    (esi preserve)
+    (edi preserve)
+    (ebp preserve)
+    (esp preserve)))
+(define (reg-name reg) (car reg))
+(define (reg-preserve? reg) (eq? 'preserve (cadr reg)))
 
 (define fixnum-bits (- (* wordsize 8) fxshift))
-
 (define fxlower (- (expt 2 (- fixnum-bits 1))))
-
 (define fxupper (sub1 (expt 2 (- fixnum-bits 1))))
-
 (define (fixnum? x)
   (and (integer? x) (exact? x) (<= fxlower x fxupper)))
 
@@ -43,7 +60,7 @@
    [else #f]))
 
 (define (emit-immediate x)
-  (emit "  movl $~s, %eax" (immediate-rep x)))
+  (emit "  mov $~s, %eax" (immediate-rep x)))
 
 (define-syntax define-primitive
   (syntax-rules ()
@@ -74,20 +91,20 @@
 
 (define-primitive (fxadd1 si env arg)
   (emit-expr si env arg)
-  (emit "  addl $~s, %eax" (immediate-rep 1)))
+  (emit "  add $~s, %eax" (immediate-rep 1)))
 
 (define-primitive (fxsub1 si env arg)
   (emit-expr si env arg)
-  (emit "  subl $~s, %eax" (immediate-rep 1)))
+  (emit "  sub $~s, %eax" (immediate-rep 1)))
 
 (define-primitive (fixnum->char si env arg)
   (emit-expr si env arg)
-  (emit "  shll $~s, %eax" (- charshift fxshift))
-  (emit "  orl $~s, %eax" chartag))
+  (emit "  shl $~s, %eax" (- charshift fxshift))
+  (emit "  or $~s, %eax" chartag))
 
 (define-primitive (char->fixnum si env arg)
   (emit-expr si env arg)
-  (emit "  shrl $~s, %eax" (- charshift fxshift)))
+  (emit "  shr $~s, %eax" (- charshift fxshift)))
 
 (define-primitive (fixnum? si env arg)
   (emit-expr si env arg)
@@ -97,13 +114,13 @@
 
 (define (emit-cmp-bool . args)
   (emit "  ~s %al" (if (null? args) 'sete (car args)))
-  (emit "  movzbl %al, %eax")
+  (emit "  movzb %al, %eax")
   (emit "  sal $~s, %al" bool-bit)
   (emit "  or $~s, %al" bool-f))
 
 (define-primitive (fxzero? si env arg)
   (emit-expr si env arg)
-  (emit "  cmpl $~s, %eax" fxtag)
+  (emit "  cmp $~s, %eax" fxtag)
   (emit-cmp-bool))
 
 (define-primitive (null? si env arg)
@@ -136,7 +153,7 @@
 
 (define-primitive (fx+ si env arg1 arg2)
   (emit-binop si env arg1 arg2)
-  (emit "  addl ~s(%esp), %eax" si))
+  (emit "  add ~s(%esp), %eax" si))
 
 (define (emit-binop si env arg1 arg2)
   (emit-expr si env arg1)
@@ -144,38 +161,38 @@
   (emit-expr (next-stack-index si) env arg2))
 
 (define (emit-stack-save si)
-  (emit "  movl %eax, ~s(%esp)" si))
+  (emit "  mov %eax, ~s(%esp)" si))
 
 (define (emit-stack-load si)
-  (emit "  movl ~s(%esp), %eax" si))
+  (emit "  mov ~s(%esp), %eax" si))
 
 (define (next-stack-index si)
   (- si wordsize))
 
 (define-primitive (fx- si env arg1 arg2)
   (emit-binop si env arg1 arg2)
-  (emit "  subl %eax, ~s(%esp)" si)
-  (emit "  movl ~s(%esp), %eax" si))
+  (emit "  sub %eax, ~s(%esp)" si)
+  (emit-stack-load si))
 
 (define-primitive (fx* si env arg1 arg2)
   (emit-binop si env arg1 arg2)
-  (emit "  shrl $~s, %eax" fxshift)
+  (emit "  shr $~s, %eax" fxshift)
   (emit "  mull ~s(%esp)" si))
 
 (define-primitive (fxlogor si env arg1 arg2)
   (emit-binop si env arg1 arg2)
-  (emit "  orl ~s(%esp), %eax" si))
+  (emit "  or ~s(%esp), %eax" si))
 
 (define-primitive (fxlogand si env arg1 arg2)
   (emit-binop si env arg1 arg2)
-  (emit "  andl ~s(%esp), %eax" si))
+  (emit "  and ~s(%esp), %eax" si))
 
 (define-primitive (fx= si env arg1 arg2)
   (emit-cmp-binop 'sete si env arg1 arg2))
 
 (define (emit-cmp-binop setx si env arg1 arg2)
   (emit-binop si env arg1 arg2)
-  (emit "  cmpl %eax, ~s(%esp)" si)
+  (emit "  cmp %eax, ~s(%esp)" si)
   (emit-cmp-bool setx))
 
 (define-primitive (fx< si env arg1 arg2)
@@ -222,13 +239,32 @@
 (define (tagged-list tag expr)
   (and (list? expr) (not (null? expr)) (eq? (car expr) tag)))
 
-(define (let? expr) (tagged-list 'let expr))
-(define (let*? expr) (tagged-list 'let* expr))
-(define (letrec? expr) (tagged-list 'letrec expr))
+(define (make-begin seq) (cons 'begin seq))
+(define (begin? expr) (and (tagged-list 'begin expr) (not (null? (begin-seq expr)))))
+(define begin-seq cdr)
+(define (emit-begin si env tail expr)
+  (emit-seq si env tail (begin-seq expr)))
+(define (emit-seq si env tail seq)
+  (cond
+   [(null? seq) (error 'emit-seq "empty seq")]
+   [(null? (rest seq)) (emit-any-expr si env tail (first seq))]
+   [else
+    (emit-expr si env (first seq))
+    (emit-seq si env tail (rest seq))]))
+
+(define (let-form? let-kind expr)
+  (and (tagged-list let-kind expr)
+       (not (null? (cddr expr)))))
+(define (let? expr) (let-form? 'let expr))
+(define (let*? expr) (let-form? 'let* expr))
+(define (letrec? expr) (let-form? 'letrec expr))
 (define let-bindings cadr)
-(define letrec-bindings cadr)
-(define let-body caddr)
-(define letrec-body caddr)
+(define letrec-bindings let-bindings)
+(define (let-body expr)
+  (if (null? (cdddr expr))
+    (caddr expr)
+    (make-begin (cddr expr))))
+(define letrec-body let-body)
 (define empty? null?)
 (define first car)
 (define rest cdr)
@@ -282,6 +318,7 @@
    [(variable? expr) (emit-variable-ref env expr) (emit-ret-if tail)]
    [(if? expr) (emit-if si env tail expr)]
    [(or (let? expr) (let*? expr)) (emit-let si env tail expr)]
+   [(begin? expr) (emit-begin si env tail expr)]
    [(primcall? expr) (emit-primcall si env expr) (emit-ret-if tail)]
    [(app? expr env) (emit-app si env tail expr)]
    [else (error 'emit-expr (format "~s is not an expression" expr))]))
@@ -329,7 +366,7 @@
       (move-arguments (- si wordsize) delta (rest args))))
   (cond
    [(not tail)
-    (emit-arguments (- si (* 2 wordsize)) (call-args expr))
+    (emit-arguments (- si wordsize) (call-args expr))
     (emit-adjust-base (+ si wordsize))
     (emit-call (lookup (call-target expr) env))
     (emit-adjust-base (- (+ si wordsize)))]
@@ -337,6 +374,46 @@
     (emit-arguments si (call-args expr))
     (move-arguments si (- (+ si wordsize)) (call-args expr))
     (emit-jmp (lookup (call-target expr) env))]))
+
+(define heap-cell-size (ash 1 objshift))
+(define (emit-heap-alloc size)
+  (let ([alloc-size (* (add1 (div (sub1 size) heap-cell-size)) heap-cell-size)])
+    (emit "  mov %rbp, %eax")
+    (emit "  add $~s, %rbp" (* alloc-size bytes))))
+(define (emit-stack-to-heap si offset)
+  (emit "  mov ~s(%esp), %rdx" si)
+  (emit "  mov %rdx, ~s(%eax)" offset))
+(define (emit-heap-load offset)
+  (emit "  mov ~s(%eax), %eax" offset))
+
+(define-primitive (cons si env arg1 arg2)
+  (emit-binop si env arg1 arg2)
+  (emit-stack-save (next-stack-index si))
+  (emit-heap-alloc pairsize)
+  (emit "  or $~s, %eax" pairtag)
+  (emit-stack-to-heap si (- paircar pairtag))
+  (emit-stack-to-heap (next-stack-index si) (- paircdr pairtag)))
+(define-primitive (pair? si env arg)
+  (emit-expr si env arg)
+  (emit "  and $~s, %al" objmask)
+  (emit "  cmp $~s, %al" pairtag)
+  (emit-cmp-bool))
+(define-primitive (car si env arg)
+  (emit-expr si env arg)
+  (emit-heap-load (- paircar pairtag)))
+(define-primitive (cdr si env arg)
+  (emit-expr si env arg)
+  (emit-heap-load (- paircdr pairtag)))
+(define-primitive (set-car! si env arg1 arg2)
+  (emit-binop si env arg2 arg1)
+  (emit-stack-to-heap si (- paircar pairtag)))
+(define-primitive (set-cdr! si env arg1 arg2)
+  (emit-binop si env arg2 arg1)
+  (emit-stack-to-heap si (- paircdr pairtag)))
+(define-primitive (eq? si env arg1 arg2)
+  (emit-binop si env arg1 arg2)
+  (emit "  cmp ~s(%esp), %eax" si)
+  (emit-cmp-bool))
 
 (define (emit-label label)
   (emit "~a:" label))
@@ -360,12 +437,29 @@
 (define (emit-jmp label)
   (emit "  jmp ~a" label))
 
+(define (preserve-registers cmd)
+  (let loop ([regs registers] [count 0])
+    (unless (null? regs)
+      (let ([reg (first regs)])
+        (if (reg-preserve? reg)
+          (cmd (reg-name reg) (* count wordsize)))
+        (loop (rest regs) (+ count 1))))))
+
+(define (backup-registers)
+  (preserve-registers (lambda (name num)
+    (emit "  mov %~a, ~s(%ecx)" name num))))
+
+(define (restore-registers)
+  (preserve-registers (lambda (name num)
+    (emit "  mov ~s(%ecx), %~a" num name))))
+
 (define (emit-program program)
   (emit-function-header "scheme_entry")
-  (emit "  mov %esp, %ecx")
-  (emit "  mov 4(%esp), %esp")
+  (emit "  mov ~s(%esp), %ecx" wordsize)
+  (backup-registers)
+  (emit "  mov %edx, %ebp")
   (emit-call "L_scheme_entry")
-  (emit "  mov %ecx, %esp")
+  (restore-registers)
   (emit "  ret")
   (cond
    [(letrec? program) (emit-letrec program)]
