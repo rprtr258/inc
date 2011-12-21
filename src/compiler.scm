@@ -1,5 +1,5 @@
 (load "tests-driver.scm")
-(load "tests-2.4.1-req.scm")
+(load "tests-2.4-req.scm")
 (load "tests-2.2-req.scm")
 (load "tests-2.1-req.scm")
 (load "tests-1.9-req.scm")
@@ -224,7 +224,7 @@
 (define (if? expr)
   (and (tagged-list 'if expr)
        (or (= 3 (length (cdr expr)))
-           (error 'if? "malformed if ~s" expr))))
+           (error 'if? (format "malformed if ~s" expr)))))
 (define if-test cadr)
 (define if-conseq caddr)
 (define if-altern cadddr)
@@ -245,7 +245,10 @@
 (define (tagged-list tag expr)
   (and (list? expr) (not (null? expr)) (eq? (car expr) tag)))
 
-(define (make-begin seq) (cons 'begin seq))
+(define (make-begin lst)
+  (if (null? (cdr lst))
+      (car lst)
+      (cons 'begin lst)))
 (define (begin? expr)
   (and (tagged-list 'begin expr)
        (or (not (null? (begin-seq expr)))
@@ -283,10 +286,7 @@
 (define let-bindings cadr)
 (define letrec-bindings let-bindings)
 (define labels-bindings let-bindings)
-(define (make-body lst)
-  (if (null? (cdr lst))
-      (car lst)
-      (make-begin lst)))
+(define make-body make-begin)
 (define let-body-seq cddr)
 (define (let-body expr)
   (make-body (let-body-seq expr)))
@@ -302,7 +302,7 @@
 (define (lhs binding)
   (check-variable (car binding)))
 (define (check-variable var)
-  (if (and (variable? var) (not (special? var)))
+  (if (variable? var)
       var
       (error 'lhs (format "~s is not a variable" var))))
 (define (make-initial-env bindings)
@@ -402,46 +402,105 @@
         name]))))
 
 (define (macro-expand expr)
-  (cond
-   [(set? expr)
-    (make-set! (set-lhs expr) (macro-expand (set-rhs expr)))]
-   [(lambda? expr)
-    (make-lambda (lambda-formals expr) (macro-expand (lambda-body expr)))]
-   [(let? expr)
-    (make-let
-     (let-kind expr)
-     (map (lambda (binding) (bind (lhs binding) (macro-expand (rhs binding))))
-          (let-bindings expr))
-     (macro-expand (let-body expr)))]
-   [(let*? expr)
-    (macro-expand
-     (if (null? (let-bindings expr))
-         (let-body expr)
-         (make-let
-          'let
-          (list (first (let-bindings expr)))
-          (make-let
-           'let*
-           (rest (let-bindings expr))
-           (let-body expr)))))]
-   [(letrec? expr)
-    (macro-expand
-     (make-let
-      'let
-      (map (lambda (binding) (bind (lhs binding) '#f))
-           (letrec-bindings expr))
-      (make-body
-       (append
-        (map (lambda (binding) (make-set! (lhs binding) (rhs binding)))
+  (define (transform expr bound-vars)
+    (cond
+     [(set? expr)
+      (make-set! (set-lhs expr) (transform (set-rhs expr) bound-vars))]
+     [(lambda? expr)
+      (make-lambda
+       (lambda-formals expr)
+       (transform (lambda-body expr)
+                  (append (lambda-formals expr) bound-vars)))]
+     [(let? expr)
+      (make-let
+       (let-kind expr)
+       (map (lambda (binding)
+              (bind (lhs binding) (transform (rhs binding) bound-vars)))
+            (let-bindings expr))
+       (transform (let-body expr)
+                  (append (map lhs (let-bindings expr)) bound-vars)))]
+     [(let*? expr)
+      (transform
+       (if (null? (let-bindings expr))
+           (let-body expr)
+           (make-let
+            'let
+            (list (first (let-bindings expr)))
+            (make-let
+             'let*
+             (rest (let-bindings expr))
+             (let-body expr))))
+       bound-vars)]
+     [(letrec? expr)
+      (transform
+       (make-let
+        'let
+        (map (lambda (binding) (bind (lhs binding) '#f))
              (letrec-bindings expr))
-        (let-body-seq expr)))))]
-   [(list? expr) (map macro-expand expr)]
-   [else expr]))
+        (make-body
+         (append
+          (map (lambda (binding) (make-set! (lhs binding) (rhs binding)))
+               (letrec-bindings expr))
+          (let-body-seq expr))))
+       bound-vars)]
+     [(tagged-list 'and expr)
+      (cond
+       [(null? (cdr expr)) #t]
+       [(null? (cddr expr)) (transform (cadr expr) bound-vars)]
+       [else
+        (transform
+         `(if ,(cadr expr)
+              (and ,@(cddr expr))
+              #f)
+         bound-vars)])]
+     [(tagged-list 'or expr)
+      (cond
+       [(null? (cdr expr)) #f]
+       [(null? (cddr expr)) (transform (cadr expr) bound-vars)]
+       [else
+        (transform
+         `(let ([one ,(cadr expr)]
+                [thunk (lambda () (or ,@(cddr expr)))])
+            (if one
+                one
+                (thunk)))
+         bound-vars)])]
+     [(tagged-list 'when expr)
+      (transform
+       `(if ,(cadr expr)
+            ,(make-begin (cddr expr))
+            #f)
+       bound-vars)]
+     [(tagged-list 'unless expr)
+      (transform
+       `(when (not ,(cadr expr)) ,@(cddr expr))
+       bound-vars)]
+     [(tagged-list 'cond expr)
+      (transform
+       (let* ([conditions (cdr expr)]
+              [first-condition (car conditions)]
+              [first-test (car first-condition)]
+              [first-body (cdr first-condition)]
+              [rest (if (null? (cdr conditions)) #f `(cond ,@(cdr conditions)))])
+         (cond
+          [(and (eq? first-test 'else) (not (member 'else bound-vars)))
+           (make-begin first-body)]
+          [(null? first-body)
+           `(or ,first-test ,rest)]
+          [(and (eq? '=> (car first-body)) (not (member '=> bound-vars)))
+           `(let ([one ,first-test])
+              (if one (,(cadr first-body) one) ,rest))]
+          [else
+           `(if ,first-test ,(make-begin first-body) ,rest)]))
+       bound-vars)]
+     [(list? expr) (map (lambda (e) (transform e bound-vars)) expr)]
+     [else expr]))
+  (transform expr '()))
 
 (define (alpha-conversion expr)
   (define (transform expr env)
     (cond
-     [(and (variable? expr) (not (special? expr)))
+     [(variable? expr)
       (or (lookup expr env)
           (error 'alpha-conversion (format "undefined variable ~s" expr)))]
      [(lambda? expr)
@@ -465,6 +524,8 @@
                       (transform (rhs binding) env)))
               (let-bindings expr))
          (transform (let-body expr) new-env)))]
+     [(and (list? expr) (not (null? expr)) (special? (car expr)))
+      (cons (car expr) (map (lambda (e) (transform e env)) (cdr expr)))]
      [(list? expr) (map (lambda (e) (transform e env)) expr)]
      [else expr]))
   (transform expr (make-initial-env '())))
@@ -553,7 +614,7 @@
 
 (define (free-vars expr)
   (cond
-   [(and (variable? expr) (not (special? expr))) (list expr)]
+   [(variable? expr) (list expr)]
    [(lambda? expr) (filter (lambda (v) (not (member v (lambda-formals expr))))
                            (free-vars (lambda-body expr)))]
    [(let? expr)
@@ -561,14 +622,7 @@
      (flatmap free-vars (map rhs (let-bindings expr)))
      (filter (lambda (v) (not (member v (map lhs (let-bindings expr)))))
              (free-vars (let-body expr))))]
-   [(let*? expr)
-    (if (null? (let-bindings expr))
-        (free-vars (let-body expr))
-        (append
-         (free-vars (rhs (first (let-bindings expr))))
-         (filter (lambda (v) (not (eq? v (lhs (first (let-bindings expr))))))
-                 (free-vars (make-let 'let* (rest (let-bindings expr)) (let-body expr))))))]
-   [(list? expr) (flatmap free-vars expr)]
+   [(list? expr) (flatmap free-vars (if (and (not (null? expr)) (special? (car expr))) (cdr expr) expr))]
    [else '()]))
 
 (define (emit-labels expr)
