@@ -652,7 +652,7 @@
 (define (translate-quote expr)
   (cond
    [(immediate? expr) expr]
-   [(symbol? expr) (list 'make-symbol (translate-quote (symbol->string expr)))]
+   [(symbol? expr) (list 'string->symbol (translate-quote (symbol->string expr)))]
    [(pair? expr)
     (list 'cons (translate-quote (car expr)) (translate-quote (cdr expr)))]
    [(vector? expr)
@@ -660,43 +660,6 @@
    [(string? expr)
     (cons 'string (map translate-quote (string->list expr)))]
    [else (error 'translate-quote (format "don't know how to quote ~s" expr))]))
-
-;; not needed as quotes are translated
-(define (emit-quote si env expr)
-  (cond
-   [(immediate? expr) (emit-immediate expr)]
-   [(pair? expr)
-    (emit-quote si env (car expr))
-    (emit-stack-save si)
-    (emit-quote (next-stack-index si) env (cdr expr))
-    (emit-stack-save (next-stack-index si))
-    (emit-cons si)]
-   [(vector? expr)
-    (emit-expr si env (vector-length expr))
-    (emit-stack-save si)
-    (emit-make-vector si)
-    (emit-stack-save si)
-    (let loop ([index 0])
-      (unless (= index (vector-length expr))
-        (emit-quote (next-stack-index si) env (vector-ref expr index))
-        (emit-stack-save (next-stack-index si))
-        (emit-stack-load si)
-        (emit "  add $~s, %eax" (* wordsize (add1 index)))
-        (emit-stack-to-heap (next-stack-index si) (- vectortag))
-        (loop (add1 index))))
-    (emit-stack-load si)]
-   [(string? expr)
-    (emit-expr si env (string-length expr))
-    (emit-stack-save si)
-    (emit-make-string si)
-    (emit-stack-save si)
-    (let loop ([index 0])
-      (unless (= index (string-length expr))
-        (emit "  add $~s, %eax" (if (= index 0) wordsize 1))
-        (emit "  movb $~s, ~s(%eax)" (char->integer (string-ref expr index)) (- stringtag))
-        (loop (add1 index))))
-    (emit-stack-load si)]
-   [else (error 'emit-quote (format "don't know how to quote ~s" expr))]))
 
 (define (lift-constants expr)
   (let ([constants '()])
@@ -1042,13 +1005,15 @@
 (define (emit-foreign-call si env expr)
   (let ([new-si (let loop ([si si] [args (reverse (foreign-call-args expr))])
                   (cond
-                   [(null? args) (+ si wordsize)]
+                   [(null? args) si]
                    [else
-                    (emit-expr-save si env (car args))
+                    (emit-expr-save (next-stack-index si) env (car args))
                     (loop (next-stack-index si) (cdr args))]))])
+    (emit "  mov %ecx, ~s(%esp)" si)
     (emit-adjust-base new-si)
     (emit-call (foreign-call-name expr))
-    (emit-adjust-base (- new-si))))
+    (emit-adjust-base (- new-si))
+    (emit "  mov ~s(%esp), %ecx" si)))
 
 (define heap-cell-size (ash 1 objshift))
 (define (emit-heap-alloc size)
