@@ -1,4 +1,3 @@
-
 (add-tests-with-string-output "exit"
  [(foreign-call "exit" 0) => ""]
 )
@@ -13,4 +12,8 @@
                  (foreign-call "ik_error" args))])
    (error 'car "died")
    12) => ""]
+)
+
+(add-tests-with-string-output "S_log"
+ [(begin (log "hello") 1) => "1\n"]
 )
