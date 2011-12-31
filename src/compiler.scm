@@ -741,6 +741,7 @@
     (emit-adjust-base (- si))
     (emit "  mov %eax, ~s" label)
     (emit-label done-label)))
+
 (define (primitive-label name)
   ;; TODO: auto-convert arbitrary scheme symbol to acceptable assembly label.
   (cond
