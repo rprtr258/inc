@@ -75,6 +75,11 @@ static void print_ptr_rec(FILE* port, ptr x, int state) {
   }
 }
 
+static void print_ptr(ptr x) {
+  print_ptr_rec(stdout, x, OUT);
+  printf("\n");
+}
+
 ptr ik_log(ptr msg) {
   fprintf(stderr, "log: ");
   print_ptr_rec(stderr, msg, IN);
@@ -98,9 +103,24 @@ void ik_error(ptr x) {
   exit(0);
 }
 
-static void print_ptr(ptr x) {
-  print_ptr_rec(stdout, x, OUT);
-  printf("\n");
+static int unshift(ptr x) {
+  return ((int) x) >> fx_shift;
+}
+
+static ptr shift(int x) {
+  return x << fx_shift;
+}
+
+static char* string_data(ptr x) {
+  string* p = (string*)(x-string_tag);
+  return p->buf;
+}
+
+ptr s_write(ptr fd, ptr str, ptr len) {
+  int bytes = write(unshift(fd),
+		    string_data(str),
+		    unshift(len));
+  return shift(bytes);
 }
 
 static char* allocate_protected_space(int size) {
