@@ -163,17 +163,42 @@
 (define (primitive-emitter x)
   (or (getprop x '*emitter*) (error 'primitive-emitter (format "primitive ~s has no emitter" x))))
 
+(define aexpr-primitives '(constant-ref primitive-ref))
+
+(define (aexpr-primcall? expr)
+  (and (pair? expr) (primitive? (car expr)) (member (car expr) aexpr-primitives)))
+
 (define (primcall? expr)
   (and (pair? expr) (primitive? (car expr))))
 
 (define (check-primcall-args prim args)
   ((if (getprop prim '*vararg*) <= =) (getprop prim '*arg-count*) (length args)))
 
+(define (emit-any-primcall si env prim args)
+  (or (check-primcall-args prim args)
+      (error 'emit-primcall (format "incorrect number of arguments to ~s" prim)))
+  (apply (primitive-emitter prim) si env args))
+
+(define (emit-aexpr-primcall si env expr)
+  (let ([prim (car expr)]
+	[args (cdr expr)])
+    (emit-any-primcall si env prim args)))
+
 (define (emit-primcall si env expr)
-  (let ([prim (car expr)] [args (cdr expr)])
-    (or (check-primcall-args prim args)
-        (error 'emit-primcall (format "incorrect number of arguments to ~s" prim)))
-    (apply (primitive-emitter prim) si env args)))
+  (let ([prim (car expr)]
+	[cont (cadr expr)]
+	[args (cddr expr)])
+    (emit-any-primcall si env prim args)
+    (emit-stack-save si)
+    (emit-expr (next-stack-index si) env cont)
+    (emit "  mov %eax, %edi")
+    (emit-stack-load si)
+    (emit-stack-save (- wordsize))
+    (emit "  mov %edi, %eax")
+    (emit-heap-load (- closuretag))
+    (emit "  mov %eax, %edx")
+    (emit "  mov $1, %eax")
+    (emit-jmp "*%edx")))
 
 (define-primitive (fxadd1 si env arg)
   (emit-expr si env arg)
@@ -473,14 +498,13 @@
 
 (define (emit-any-expr si env tail expr)
   (cond
-   [(immediate? expr) (emit-immediate expr) (emit-ret-if tail)]
-   [(variable? expr) (emit-variable-ref si env expr) (emit-ret-if tail)]
-   [(closure? expr) (emit-closure si env expr) (emit-ret-if tail)]
-   [(if? expr) (emit-if si env tail expr)]
-   [(let? expr) (emit-let si env tail expr)]
-   [(begin? expr) (emit-begin si env tail expr)]
-   [(primcall? expr) (emit-primcall si env expr) (emit-ret-if tail)]
-   [(app? expr env) (emit-app si env tail expr)]
+   [(immediate? expr)      (emit-immediate expr)             (emit-ret-if tail)]
+   [(variable? expr)       (emit-variable-ref si env expr)   (emit-ret-if tail)]
+   [(closure? expr)        (emit-closure si env expr)        (emit-ret-if tail)]
+   [(if? expr)             (emit-if si env tail expr)        (assert      tail)]
+   [(aexpr-primcall? expr) (emit-aexpr-primcall si env expr) (emit-ret-if tail)]
+   [(primcall? expr)       (emit-primcall si env expr)       (assert      tail)]
+   [(app? expr)            (emit-app si env tail expr)       (assert      tail)]
    [else (error 'emit-expr (format "~s is not an expression" expr))]))
 
 (define unique-name
@@ -835,11 +859,8 @@
   (make-let
    'labels
    (let-bindings expr)
-   (T-k (macro-expand-let (let-body expr)) (lambda (x) x))))
-
-;; TODO
-(define (T-k expr k)
-  expr)
+   (cps-top (macro-expand-let (let-body expr)))))
+(load "cps.scm")
 
 (define (closure-conversion expr)
   (let ([labels '()]
@@ -882,19 +903,28 @@
 (define (flatmap f . lst)
   (apply append (apply map f lst)))
 
-(define (free-vars expr)
+(define (free-vars_ expr)
   (cond
    [(variable? expr) (list expr)]
    [(lambda? expr) (filter (lambda (v) (not (member v (lambda-vars expr))))
-                           (free-vars (lambda-body expr)))]
+                           (free-vars_ (lambda-body expr)))]
    [(let? expr)
     (append
-     (flatmap free-vars (map rhs (let-bindings expr)))
+     (flatmap free-vars_ (map rhs (let-bindings expr)))
      (filter (lambda (v) (not (member v (map lhs (let-bindings expr)))))
-             (free-vars (let-body expr))))]
+             (free-vars_ (let-body expr))))]
    [(tagged-list 'primitive-ref expr) '()]
-   [(list? expr) (flatmap free-vars (if (and (not (null? expr)) (special? (car expr))) (cdr expr) expr))]
+   [(list? expr) (flatmap free-vars_ (if (and (not (null? expr)) (special? (car expr))) (cdr expr) expr))]
    [else '()]))
+
+(define (remove-dups xs)
+  (if (null? xs)
+      xs
+      (cons (first xs)
+	    (remove-dups (filter (lambda (el) (not (equal? (first xs) el))) xs)))))
+
+(define (free-vars expr)
+  (remove-dups (free-vars_ expr)))
 
 (define (emit-library)
   (define (emit-library-primitive prim-name)
@@ -1029,7 +1059,7 @@
       (extend-env-with (- wordsize) env bvs (lambda (si env)
         (close-env-with wordsize env fvs (lambda (env)
           (emit-tail-expr si env body))))))))
-(define (app? expr env)
+(define (app? expr)
   (and (list? expr) (not (null? expr))))
 (define (call-apply? expr)
   (tagged-list 'apply expr))
@@ -1136,7 +1166,7 @@
       (emit-label ok)
       (emit "  mov %edi, %eax"))))
 (define (emit-error si env)
-  (emit-expr si env '((primitive-ref error))))
+   (emit-tail-expr si env '((primitive-ref error) #f)))
 
 (define (foreign-call? expr)
   (tagged-list 'foreign-call expr))
