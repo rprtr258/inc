@@ -17,7 +17,7 @@ char fancy(char c) {
 }
 
 ptr scheme_entry(context* ctxt, char* stack_base, memory* mem) {
-  char* heap = mem->heap_cur;
+  char* heap = mem->heap_next;
   if (global_fun == 0) {
     global_fun = ((ptr) &inc) | closure_tag;
   }
