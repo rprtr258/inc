@@ -239,9 +239,7 @@ static unsigned int gc_size(ptr x) {
     n = (((string*)p)->length >> fx_shift) + word_size;
     break;
   case closure_tag:
-    n = 0;
-    while (((closure*)p)->fvs[n++] != closure_end);
-    n++;
+    n = (((closure*)p)->length >> fx_shift) + 2;
     n = n << word_shift;
     break;
   }
@@ -297,11 +295,15 @@ static void gc(memory* mem, char* stack) {
   }
 
   root = (ptr*)mem->stack_base;
-  root--; // skip top-level return addresses
+  root--; // skip top-level return address
   root--;
   while (root >= (ptr*) stack) {
-    if (*root == return_addr) root--; // skip return address
-    else *root = gc_forward(*root);
+    if (*root == return_addr) {
+      root--; // skip return address
+      root--;
+    } else {
+      *root = gc_forward(*root);
+    }
     root--;
   }
 
@@ -309,9 +311,6 @@ static void gc(memory* mem, char* stack) {
 
   while (scan < gc_queue) {
     ptr x = *(scan++);
-
-    unsigned int n = gc_size(x);
-    assert(n != 0);
 
     ptr tag = x & obj_mask;
     char* q = (char*)(x-tag);
@@ -329,11 +328,10 @@ static void gc(memory* mem, char* stack) {
 	p->buf[i] = gc_forward(p->buf[i]);
     } else if (tag == closure_tag) {
       closure* p = (closure*)(x-tag);
-      unsigned int i = 0;
-      while (p->fvs[i] != closure_end) {
+      unsigned int len = p->length >> fx_shift;
+      unsigned int i;
+      for (i=0; i<len; i++)
 	p->fvs[i] = gc_forward(p->fvs[i]);
-	i++;
-      }
     }
   }
 
