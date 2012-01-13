@@ -507,6 +507,7 @@
    [(closure? expr)        (emit-closure si env expr)        (emit-ret-if tail)]
    [(if? expr)             (emit-if si env tail expr)        (assert      tail)]
    [(let? expr)            (emit-let si env tail expr)       (assert      tail)]
+   [(begin? expr)          (emit-begin si env tail expr)     (assert #f)]
    [(aexpr-primcall? expr) (emit-aexpr-primcall si env expr) (emit-ret-if tail)]
    [(primcall? expr)       (emit-primcall si env expr)       (assert      tail)]
    [(app? expr)            (emit-app si env tail expr)       (assert      tail)]
@@ -919,7 +920,8 @@
   (closure-conversion (cps-conversion (lift-constants (all-expr-conversions expr)))))
 
 (define (special? symbol)
-  (or (member symbol '(if begin let lambda closure set! quote apply call/cc))
+  (or (member symbol '(if begin let lambda closure set! quote apply))
+      (eq? symbol 'call/cc)
       (primitive? symbol)))
 
 (define (flatmap f . lst)
@@ -1151,13 +1153,14 @@
       (emit-label done-label)))
   (cond
    [(not tail)
-    (emit-arguments (- si (* 2 wordsize)) (call-args expr))
-    (emit-expr (- si (* wordsize (+ 2 (length (call-args expr))))) env (call-target expr))
     (emit "  mov %edi, ~s(%esp)" si)
+    (emit "  movl $~s, ~s(%esp)" return-addr (next-stack-index si))
+    (emit-arguments (- si (* 4 wordsize)) (call-args expr))
+    (emit-expr (- si (* wordsize (+ 4 (length (call-args expr))))) env (call-target expr))
     (emit "  mov %eax, %edi")
     (emit-ensure-procedure si env expr)
     (emit-load-closure-label)
-    (emit-adjust-base si)
+    (emit-adjust-base (next-stack-index (next-stack-index si)))
     (emit "  mov %eax, %edx")
     (if (call-apply? expr)
 	(begin
@@ -1166,7 +1169,7 @@
 	  (emit "  add $4, %esp"))
 	(emit "  mov $~s, %eax" (length (call-args expr))))
     (emit-call "*%edx")
-    (emit-adjust-base (- si))
+    (emit-adjust-base (- (next-stack-index (next-stack-index si))))
     (emit "  mov ~s(%esp), %edi" si)]
    [else ; tail
     (emit-arguments si (call-args expr))
@@ -1191,7 +1194,7 @@
       (emit-label ok)
       (emit "  mov %edi, %eax"))))
 (define (emit-error si env)
-   (emit-tail-expr si env '((primitive-ref error) #f)))
+  (emit-tail-expr si env '((primitive-ref error) #f)))
 
 (define (foreign-call? expr)
   (tagged-list 'foreign-call expr))
