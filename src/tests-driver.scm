@@ -50,17 +50,17 @@
   (let ([expr (car test)]
         [type (cadr test)]
         [out  (caddr test)])
-    (printf "test ~s:~s ..." test-id expr)
+    (printf "Test ~s:~s ..." test-id expr)
     (flush-output-port)
     (case type
      [(string) (test-with-string-output test-id expr out)]
      [else (error 'test (format "invalid test type ~s" type))])
-    (printf " ok\n")))
+    (printf " Ok\n")))
 
 (define (test-all)
   (let f ([i 0] [ls all-tests])
     (if (null? ls)
-        (printf "passed all ~s tests\n" i)
+        (printf "Passed all ~s tests\n" i)
         (let ([x (car ls)] [ls (cdr ls)])
           (let* ([test-name (car x)]
                  [tests (cdr x)]
