@@ -16,8 +16,19 @@
 lib.s: tests-driver.scm compiler.scm lib.scm
 	echo '(compile-lib)' | scheme compiler.scm --quiet
 
+bootlib.s: bootlib.scm tests-driver.scm compiler.scm self.scm reader.scm startup.c lib.s
+	echo "" | scheme bootlib.scm --quiet
+	make stst
+	./stst
+
+boot: repl.scm tests-driver.scm compiler.scm self.scm reader.scm startup.c lib.s
+	echo "" | scheme repl.scm --quiet
+	make stst
+	mv stst boot
+
 .PHONY: stst
 stst: startup.c lib.s stst.s
+	#sudo apt install gcc-multilib libc6-dev-i386
 	gcc	-m32 \
 		-Wall \
 		-g3 -ggdb3 \
@@ -27,10 +38,9 @@ stst: startup.c lib.s stst.s
 		-o stst
 
 .PHONY: test
-test:
-	echo '(test-all)' | scheme compiler.scm --quiet
+test: lib.s
+	echo '(test-all)' | scheme compiler-tests.scm --quiet
 
 .PHONY: clean
 clean:
-	rm -f stst.s lib.s stst stst.out
-
+	rm -f boot stst.s lib.s stst stst.out
